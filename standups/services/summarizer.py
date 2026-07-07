@@ -19,6 +19,17 @@ is provided at the top of the activity list.
 for context only — do NOT list them as today's work unless they clearly continued into the target date \
 (e.g., an in-progress ticket with commits on both days).
 - Group related work together (e.g., multiple commits on the same ticket/PR = one bullet)
+- When a single ticket has work in MORE THAN ONE repository, split it into separate bullets — \
+one per repository — and never combine work from different repos into one bullet. Label each with \
+the repository name in parentheses right after the ticket ID \
+(e.g., "ATH-1234 (delos): ..." and "ATH-1234 (dashboard): ..."). Put each piece of work's \
+sub-bullets under the bullet for the repo it belongs to. If a ticket only had work in ONE repo, \
+keep it as a single bullet with NO repository label. Determine the repository from the [repo] tag \
+shown in the activity data. The "delos" repo is the backend; "website" and "dashboard" are the \
+frontend repos. When the repo is not directly shown, infer it from the nature of the change: \
+server-side logic, Django models, migrations, API endpoints, services, data guards/validation, \
+serializers, and notifications are backend (delos); UI components, pages, modals, styling/spacing, \
+profile cards, and browser-side behavior are frontend (dashboard or website).
 - When a ticket ID is available, it MUST be the first thing in the bullet point \
 (e.g., "ATH-1408: Worked on guardian dashboard" not "Worked on ATH-1408 guardian dashboard"). \
 Format: "TICKET-ID: description"
@@ -37,21 +48,32 @@ scope of work on those tickets. Group multiple released tickets into a single bu
 paraphrase, or invent a new description for the ticket — use the original title verbatim.
 - Do NOT directly quote Slack messages — summarize the topics discussed instead
 - Use markdown bullet points (-)
-- If there are fewer than 5 major items in "Today", expand each item with indented sub-bullets \
-that describe specific features, functionalities, and changes worked on in more detail. \
+- For EACH ticket or item in "Today" that had substantial work, expand it with 3 to 5 \
+indented sub-bullets (at least 3-4, never more than 5) describing specific features, \
+functionalities, and changes. \
 Pull details from commit messages, PR descriptions, file changes, and ticket context. \
 Each sub-bullet should describe a distinct piece of work (e.g., a specific fix, a new page added, \
-a rendering improvement). Do NOT pad with vague filler — only add sub-bullets when there are \
-real details available.
-- If there are 5 or more major items, keep each bullet point to one line without sub-bullets.
+a rendering improvement). When there are more than 5 distinct pieces of work, combine related ones \
+so the item never exceeds 5 sub-bullets. This applies regardless of how many total items are in "Today".
+- Do NOT pad with vague filler. If an item genuinely had very little work — a single small commit, \
+a quick PR review, or a ticket merely moved to a terminal state with no commits/PRs — keep it to \
+one line (or fewer sub-bullets), and never invent detail that is not grounded in the activity data.
 
-Format your response EXACTLY like this (sub-bullets only when fewer than 5 major items):
+Format your response EXACTLY like this (3-4 sub-bullets per ticket with substantial work; \
+one line for items with very little work):
 ## Today
-- ATH-1234: Description of work done
-  - Detail about a specific feature or change
-  - Detail about another aspect of the work
-- ATH-5678: Another item
-  - Detail
+- ATH-1234 (delos): Description of the backend work on this ticket
+  - Detail about a specific server-side feature or change
+  - Detail about another backend aspect of the work
+  - Detail about a third backend piece of work
+- ATH-1234 (dashboard): Description of the frontend work on this ticket
+  - Detail about a specific UI feature or change
+  - Detail about another frontend aspect of the work
+- ATH-5678: Another item that had work in only ONE repo (no repo label)
+  - Specific fix or feature
+  - Another distinct change
+  - A third distinct change
+- ATH-9012: Small item with very little work (one line, no sub-bullets)
 
 ## Tomorrow
 - ATH-1234: Continue remaining work
@@ -835,19 +857,35 @@ def enforce_reviewed_prs_today(today: str, activities, target_date=None) -> str:
     return "\n".join(lines).strip()
 
 
-def find_ticket_group_end(lines: list[str], ticket_ids: set[str]) -> int:
-    """Find the insertion index after the last sub-bullet of an existing ticket's bullet group."""
+def repo_name(repository: str) -> str:
+    """Return the short repo name (last path segment), lowercased."""
+    return (repository or "").split("/")[-1].lower()
+
+
+def find_ticket_group_end(lines: list[str], ticket_ids: set[str], repo: str = "") -> int:
+    """Find the insertion index after the last sub-bullet of an existing ticket's bullet group.
+
+    When a ticket is split into per-repo bullets, prefer the group whose header carries the
+    matching repo label so PR-finished notes attach under the correct bullet.
+    """
     lower_ids = {tid.lower() for tid in ticket_ids}
+    fallback = None
     for i, line in enumerate(lines):
-        if not line.lstrip().startswith("-"):
+        if not line.startswith("-"):
             continue
-        # Check if this is a top-level bullet (no leading whitespace) matching one of our ticket IDs
-        if line.startswith("-") and any(tid in line.lower() for tid in lower_ids):
-            # Walk forward past all sub-bullets (indented lines)
-            j = i + 1
-            while j < len(lines) and not lines[j].startswith("-"):
-                j += 1
+        lower_line = line.lower()
+        if not any(tid in lower_line for tid in lower_ids):
+            continue
+        # Walk forward past all sub-bullets (indented lines) to find this group's end.
+        j = i + 1
+        while j < len(lines) and not lines[j].startswith("-"):
+            j += 1
+        if repo and f"({repo})" in lower_line:
             return j
+        if fallback is None:
+            fallback = j
+    if fallback is not None:
+        return fallback
     return len(lines)
 
 
@@ -884,7 +922,9 @@ def enforce_ready_tagged_prs_finished(today: str, tomorrow: str, activities, tar
 
         if ticket_already_present:
             # Ticket already described by the AI — just note the PR status
-            insert_idx = find_ticket_group_end(today_lines, ticket_ids)
+            insert_idx = find_ticket_group_end(
+                today_lines, ticket_ids, repo_name(activity.repository)
+            )
             repo = activity.repository.split("/")[-1] if activity.repository else "repo"
             today_lines.insert(insert_idx, f"  - Finished PR in {repo} ({labels})")
             seen_finished.add(dedupe_key)
